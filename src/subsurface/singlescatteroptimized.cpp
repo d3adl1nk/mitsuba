@@ -73,7 +73,6 @@ struct ConicSection {
 	Float angle;			// in [-pi, pi]
 	Matrix3x3 transformCanonicalToBarycentric;
 	Matrix3x3 transformBarycentricToCanonical;
-	std::vector<ConicChord> approximation;
 };
 
 /*	Comparison function to sort intersection points according to parameter value and branch
@@ -104,19 +103,35 @@ bool compIsectPts(IsectPoint iPt1, IsectPoint iPt2) {
 /*	poly[i] represents the polynomial corresponding to the monomial X^i
 	The degree of the polynomial can be obtained by substracting 1 to the size
 	of the underlying vector
+	[TODO] Replace with Boost polynomials?
 */
-Float polynomialEval(const std::vector<Float>& poly, Float t) {
-	int k = poly.size() - 1;
-	Float result = poly[k];
-	--k;
 
-	while (k >= 0) {
-		result *= t;
-		result += poly[k];
-		--k;
+//	Horner evaluation a polynomial, taken from Higham 2002 (p94)
+Float polynomialHorner(const std::vector<Float>& poly, Float t) {
+	int n = poly.size() - 1;
+	Float result = poly[n];
+
+	for (int i = n - 1; i >= 0; --i) {
+		result = t * result + poly[i];
 	}
 
 	return result;
+}
+
+/*	Horner evaluation of a polynomial and its first derivative, from Higham 2002 (p97, k = 1)
+	valP contains the result of evaluating the polynomial,
+	valD contains the result of evaluating its first derivative.
+*/
+void polynomialHornerDeriv(const std::vector<Float>& poly, Float t,
+						   Float& valP, Float& valD) {
+	int n = poly.size() - 1;
+	valP = poly[n];
+	valD = 0;
+
+	for (int j = n - 1; j >= 0; --j) {
+		valD = t * valD + valP;
+		valP = t * valP + poly[j];
+	}
 }
 
 void polynomialAdd(std::vector<Float>& polyDest, const std::vector<Float>& polySrc) {
@@ -155,6 +170,13 @@ void polynomialNeg(std::vector<Float>& polyDest) {
 	}
 }
 
+// std::vector<Float> polynomialDerivative(const std::vector<Float>& polySrc) {
+// 	std::vector<Float> polyDest(polySrc.size() - 1);
+// 	for (int i = 0; i < polyDest.size(); ++i) {
+// 		polyDest[i] = (i + 1) * polySrc[i+1];
+// 	}
+// }
+
 /*	Generates the quadratic term in the constraint function
 	\norm{X - P(t)}^2
 	where the variable t is the position along the chord
@@ -188,45 +210,6 @@ void polynomialQuarticConstraint(std::vector<Float>& poly, Vector3 X,
 	poly[4] = A.lengthSquared();
 }
 
-/*	Generates the whole constraint polynomial over a given chord
-	If we denote the quadratic terms by Q_2(X) and the quartic terms by Q_4(X),
-	the constraint polynomial is defined by:
-	eta^2 * Q_2(L) * Q_4(V) - Q_2(V) * Q_4(L)
-*/
-void polynomialConstraint(ConicChord& chord, Float eta,
-						  Vector P10, Vector P20, Vector vP0,
-						  Vector N10, Vector N20, Vector vN0,
-						  Vector vL, Vector vV) {
-	Vector3 Delta = chord.q1.position - chord.q0.position;
-
-	Matrix3x3 pBar(P10, P20, vP0);
-	Vector3 Pc = pBar * chord.q0.position;
-	Vector3 Pt = pBar * Delta;
-
-	Matrix3x3 nBar(N10, N20, vN0);
-	Vector3 Nc = nBar * chord.q0.position;
-	Vector3 Nt = nBar * Delta;
-
-	// LHS stored in chord.polynomial
-	chord.polynomial.resize(3);	// std::vector<Float> polyQuadraticLHS(3);
-	std::vector<Float> polyQuarticLHS(5);
-	polynomialQuadraticConstraint(chord.polynomial, vL, Pc, Pt);
-	polynomialQuarticConstraint(polyQuarticLHS, vV, Pc, Pt, Nc, Nt);
-	polynomialMult(chord.polynomial, polyQuarticLHS);	// resize to 7
-	polynomialSMult(chord.polynomial, eta * eta);
-
-	// RHS stored in polyQuadraticRHS
-	std::vector<Float> polyQuadraticRHS(3);
-	std::vector<Float> polyQuarticRHS(5);
-	polynomialQuadraticConstraint(polyQuadraticRHS, vV, Pc, Pt);
-	polynomialQuarticConstraint(polyQuarticRHS, vV, Pc, Pt, Nc, Nt);
-	polynomialMult(polyQuadraticRHS, polyQuarticRHS);	// resize to 7
-	polynomialSMult(polyQuadraticRHS, -1.0);
-
-	// Full constraint polynomial stored in polyQuadraticLHS
-	polynomialAdd(chord.polynomial, polyQuadraticRHS);
-}
-
 int sign(Float val) {
 	return (Float(0) < val) - (val < Float(0));
 }
@@ -256,6 +239,48 @@ int polynomialDescartes(const std::vector<Float>& poly) {
 	}
 
 	return signChanges(polyTransformed);
+}
+
+/* 	Naïve Newton's method, no step
+	[TODO] Improve method robustness
+*/
+bool polynomialNewton(const std::vector<Float>& poly, Float& root) {
+	int maxIter = 10;
+	Float minPrecision = 1e-5;
+	int iter = 0;
+	bool foundSol = false;
+
+	Float val0 = polynomialHorner(poly, 0.0);
+	Float val1 = polynomialHorner(poly, 1.0);
+	// root of the linear interpolation of P in [0, 1]
+	Float x = val0 / (val0 - val1);
+	x = math::clamp(x, (Float)0.0, (Float)1.0);	// [CHECK] is this necessary?
+
+	Float valP, valD;
+	polynomialHornerDeriv(poly, x, valP, valD);
+	if (std::abs(valP) < minPrecision) {	// check if initial guess is a solution
+		foundSol = true;
+	}
+
+	// Newton's method, stops after a number of iterations
+	// or when the value at the iterate is close to 0
+	while (!foundSol && (iter < maxIter)) {
+		Float step = - valP / valD;
+		x += step;
+		++iter;
+
+		polynomialHornerDeriv(poly, x, valP, valD);
+		if (std::abs(valP) < minPrecision) {
+			foundSol = true;
+		}
+	}
+
+	if (foundSol) {	// valid solution only if between 0 and 1
+		if ((x >= 0.0) && (x <= 1.0)) root = x;
+		else foundSol = false;
+	}
+	
+	return foundSol;
 }
 
 //-------------- [MH2020] End set of functions for conic sections -------------
@@ -357,13 +382,13 @@ public:
     }
 
 	//-------------- [MH2020] Begin set of functions for conic sections -------
-	bool isInTriangle(Float a, Float b) {
+	bool isInTriangle(Float a, Float b) const {
 		return (a >= 0.0 && a <= 1.0) &&
 			   (b >= 0.0 && b <= 1.0) &&
 			   (a + b <= 1.0);
 	}
 
-	bool computeConicParameters(ConicSection &conic) const{
+	bool computeConicParameters(ConicSection &conic) const {
 		Matrix3x3 conicMatrix(conic.coefficients[0], 0.5f * conic.coefficients[1], 0.5f * conic.coefficients[3],
 							  0.5f * conic.coefficients[1], conic.coefficients[2], 0.5f * conic.coefficients[4],
 							  0.5f * conic.coefficients[3], 0.5f * conic.coefficients[4], conic.coefficients[5]);
@@ -484,7 +509,7 @@ public:
 	/*	Takes the parameter corresponding to a point in the conic canonical space
 		and returns its corresponding barycentric coordinates.
 	*/
-	Vector3 conicParamToPos(const ConicSection &conic, const ConicParam cParam) {
+	Vector3 conicParamToPos(const ConicSection &conic, const ConicParam cParam) const {
 		Vector3 canonicalPos(0.0);
 		canonicalPos[2] = 1.0;	// Homogeneous coordinates
 
@@ -506,7 +531,7 @@ public:
 	/*	Computes the best point on the conic for subdividing the current chord
 		and the maximal distance from the chord to that point.
 	*/
-	bool chordSplit(const ConicSection& conic, ConicChord& chord) {
+	bool chordSplit(const ConicSection& conic, ConicChord& chord) const {
 		Float qMidParamValue = 0.5 * (chord.q0.parameter.value + chord.q1.parameter.value);
 		ConicParam qMidParam = { .value = qMidParamValue, .branch = chord.q0.parameter.branch };
 		Vector3 qMidPosition = conicParamToPos(conic, qMidParam);
@@ -523,14 +548,111 @@ public:
 		chord.qMid.position = qMidPosition;
 		chord.qMid.parameter = qMidParam;
 
-		
+		Vector3 q1q0 = chord.q1.position - chord.q0.position;
+		Vector3 qMidq0 = chord.qMid.position - chord.q0.position;
+
+		chord.distToConic = cross(q1q0, qMidq0).length() / q1q0.length();
 
 		return true;
 	}
 
-	bool chordPolynomial(const ConicSection& conic, ConicChord& chord) {
+	/*	Generates the whole constraint polynomial over a given chord
+	If we denote the quadratic terms by Q_2(X) and the quartic terms by Q_4(X),
+	the constraint polynomial is defined by:
+	eta^2 * Q_2(L) * Q_4(V) - Q_2(V) * Q_4(L)
+	*/
+	void chordPolynomial(ConicChord& chord, Float eta,
+					     Vector P10, Vector P20, Vector vP0,
+						 Vector N10, Vector N20, Vector vN0,
+						 Vector vL, Vector vV) const {
+		Vector3 Delta = chord.q1.position - chord.q0.position;
 
-		return true;
+		Matrix3x3 pBar(P10, P20, vP0);
+		Vector3 Pc = pBar * chord.q0.position;
+		Vector3 Pt = pBar * Delta;
+
+		Matrix3x3 nBar(N10, N20, vN0);
+		Vector3 Nc = nBar * chord.q0.position;
+		Vector3 Nt = nBar * Delta;
+
+		// LHS stored in chord.polynomial
+		chord.polynomial.resize(3);	// std::vector<Float> polyQuadraticLHS(3);
+		std::vector<Float> polyQuarticLHS(5);
+		polynomialQuadraticConstraint(chord.polynomial, vL, Pc, Pt);
+		polynomialQuarticConstraint(polyQuarticLHS, vV, Pc, Pt, Nc, Nt);
+		polynomialMult(chord.polynomial, polyQuarticLHS);	// resize to 7
+		polynomialSMult(chord.polynomial, eta * eta);
+
+		// RHS stored in polyQuadraticRHS
+		std::vector<Float> polyQuadraticRHS(3);
+		std::vector<Float> polyQuarticRHS(5);
+		polynomialQuadraticConstraint(polyQuadraticRHS, vV, Pc, Pt);
+		polynomialQuarticConstraint(polyQuarticRHS, vV, Pc, Pt, Nc, Nt);
+		polynomialMult(polyQuadraticRHS, polyQuarticRHS);	// resize to 7
+		polynomialSMult(polyQuadraticRHS, -1.0);
+
+		// Full constraint polynomial stored in polyQuadraticLHS
+		polynomialAdd(chord.polynomial, polyQuadraticRHS);
+	}
+
+	// [CHECK]
+	// chords' elements should already have midpoint information (call chordSplit beforehand)
+	void conicApproximationSubdivide(std::list<ConicChord>& chords,
+									 const ConicSection& conic, Float minPrecision) const {
+		std::list<ConicChord>::iterator it = chords.begin();
+		
+		while (it != chords.end()) {
+			if (it->distToConic > minPrecision) {
+				ConicChord chordLeft = { .q0 = it->q0, .q1 = it->qMid };
+				ConicChord chordRight = { .q0 = it->qMid, .q1 = it->q1 };
+				chordSplit(conic, chordLeft);
+				chordSplit(conic, chordRight);
+				chords.push_back(chordLeft);
+				chords.push_back(chordRight);
+
+				it = chords.erase(it);	// Returns iterator pointing to next element
+			} else {
+				++it;
+			}
+		}
+	}
+
+	void conicApproximationDescartes(std::list<ConicChord>& chords, const ConicSection& conic,
+								 Vector P10, Vector P20, Vector vP0,
+						 		 Vector N10, Vector N20, Vector vN0,
+								 Vector vL, Vector vV) const {
+		std::list<ConicChord>::iterator it = chords.begin();
+		
+		while (it != chords.end()) {
+			chordPolynomial(*it, m_eta, P10, P20, vP0, N10, N20, vN0, vL, vV);
+			int descartesBound = polynomialDescartes(it->polynomial);
+
+			if (descartesBound == 0) {	// No roots, discard the chord
+				it = chords.erase(it);
+			} else if (descartesBound == 1) { // Single root, keep the chord
+				++it;
+			} else {	// More than one root over the chord, split the chord
+				ConicChord chordLeft = { .q0 = it->q0, .q1 = it->qMid };
+				ConicChord chordRight = { .q0 = it->qMid, .q1 = it->q1 };
+				chordSplit(conic, chordLeft);
+				chordSplit(conic, chordRight);
+				chords.push_back(chordLeft);
+				chords.push_back(chordRight);
+
+				it = chords.erase(it);	// Returns iterator pointing to next element
+			}
+		}
+	}
+
+	// [CHECK] Can the projected point not lie in the conic? (Ellipse case)
+	Vector2 chordProjection(const ConicSection& conic, const ConicChord& chord,
+							Float root) const {
+		Float paramValue = (1.0 - root) * chord.q0.parameter.value +
+								   root * chord.q1.parameter.value;
+		ConicParam weightedParam = { .value = paramValue, .branch = chord.q0.parameter.branch };
+		Vector3 projPos = conicParamToPos(conic, weightedParam);
+		
+		return Vector2(projPos[0], projPos[1]);
 	}
 
 	//-------------- End set of functions for conic sections ------------------
@@ -643,9 +765,11 @@ public:
 		triangle at an intersection point). These intersections are paired such that
 		a pair of points lie on the same chord of the conic section inside
 		the triangle.
+
+		[TODO] All functions that can fail should be checked (chordSplit among others)
 	*/
 	Spectrum testThisTriangle(const Triangle &tri, const Point &L,
-							  const Point &V, const Vector &dInternal,
+							  const Point &V, const Vector &dInternal, Float dist,
 							  const Point *positions, const Vector *normals,
 							  const Spectrum &inputSpectrum, const Scene *scene,
 							  Float time = 0.) const {
@@ -768,13 +892,15 @@ public:
 		std::sort(isectPoints.begin(), isectPoints.end(), compIsectPts);
 		int numIsects = isectPoints.size();
 		ConicChord chord;
+		std::list<ConicChord> conicApprox;
 
 		// [CHECK] Re-read this section
 		if (numIsects == 2) {
 			// One chord
 			// E/H: single pair of intersection points
 			chord = {isectPoints[0].cPoint, isectPoints[1].cPoint};
-			conic.approximation.push_back(chord);
+			chordSplit(conic, chord);
+			conicApprox.push_back(chord);
 		} else if ((numIsects == 4) || (numIsects == 6)) {
 			/*	Two or three chords
 				[4]	E: pairs between adjacent intersection points not on the same triSide
@@ -784,9 +910,11 @@ public:
 				(isectPoints[0].cPoint.parameter.branch != isectPoints[3].cPoint.parameter.branch)) {
 				// Two branches: [--++] configuration
 				chord = {isectPoints[0].cPoint, isectPoints[1].cPoint};
-				conic.approximation.push_back(chord);
+				chordSplit(conic, chord);
+				conicApprox.push_back(chord);
 				chord = {isectPoints[2].cPoint, isectPoints[3].cPoint};
-				conic.approximation.push_back(chord);
+				chordSplit(conic, chord);
+				conicApprox.push_back(chord);
 			} else { // All other cases are single branch cases
 				// Find the isectPoint sharing an edge with the next one in the list
 				int sameSideIdx = 0;
@@ -799,7 +927,7 @@ public:
 				int i = (sameSideIdx % 2 == 0) ? 1 : 0;
 				while (i < numIsects) {
 					chord = {isectPoints[i].cPoint, isectPoints[(i+1) % numIsects].cPoint};
-					conic.approximation.push_back(chord);
+					conicApprox.push_back(chord);
 					i += 2;
 				}	
 			}
@@ -807,105 +935,139 @@ public:
 			Log(EError, "Odd number of intersection points");
 		}
 
-		return Spectrum(0.0f);
-		//Algorithms for projecting points onto conics
+		/*	Subdivide the chords until the maximum distance between each chord and the
+			conic falls below a user-specified threshold. Then discard every chord that
+			doesn't contain a root, and subdivide those that contain multiple.	*/
+		Float approxPrecision = 1e-2;
+		conicApproximationSubdivide(conicApprox, conic, approxPrecision);
+		conicApproximationDescartes(conicApprox, conic, P10, P20, vP0, N10, N20, vN0, vL, vV);
+
+		Spectrum cfTri(0.0f);
+		std::list<ConicChord>::iterator it = conicApprox.begin();
+		for (std::list<ConicChord>::iterator it = conicApprox.begin();
+			 it != conicApprox.end(); ++it) {
+			Float root = 0.0;
+			if (!polynomialNewton(it->polynomial, root))	// Find the root on the chord
+				Log(EError, "The root wasn't found in maxIter iterations");
+			Vector2 conicRoot = chordProjection(conic, *it, root);	// Project the root on the conic
+
+			// [TODO] compute contribution from that point
+			Vector paramP(dist, conicRoot[0], conicRoot[1]);
+			Float a11 = dot(P10, P10);
+			Float a12 = dot(P10, P20);
+			Float a22 = dot(P20, P20);
+			const Float det = a11 * a22 - a12 * a12;
+			if (det == 0) continue;	// [CHECK] comparison with 0???
+
+			const Float invDet = 1.0f / det;
+			a11 *= invDet;
+			a12 *= invDet;
+			a22 *= invDet;
+	
+			cfTri += contributionFromThatPoint(paramP, P10, P20, N10, N20, L, V, dInternal,
+											   tP[0], tN, Ng, a11, a12, a22, inputSpectrum,
+											   scene, time);
+		}
+
+		return cfTri;
 	}
 
-	// //------------------------------------------------------------------------
-	// Spectrum contributionFromThatPoint(const Vector &paramP, const Vector &dPdu,
-	// 								   const Vector &dPdv, const Vector &dNsdu,
-	// 								   const Vector &dNsdv, const Point &L,
-	// 								   const Point &V0, const Vector &dInternal,
-	// 								   const Point &P0, const Vector tN[3],
-	// 								   const Vector &Ng, Float a11, Float a12,
-	// 								   Float a22, const Spectrum &inputSpectrum,
-	// 								   const Scene *scene,
-	// 								   Float time = 0.0f) const {
-	// 	const Point Pc = P0 + paramP[1] * dPdu + paramP[2] * dPdv;
-	// 	const Point V = V0 + paramP[0] * dInternal;
-	// 	Vector omegaV = V - Pc;
-	// 	Float domegaV = omegaV.length();
-	// 	omegaV /= domegaV;
-	// 	Vector omegaL = L - Pc;
-	// 	Float domegaL = omegaL.length();
-	// 	omegaL /= domegaL;
-	// 	Spectrum result = inputSpectrum;
+	//------------------------------------------------------------------------
+	Spectrum contributionFromThatPoint(const Vector &paramP, const Vector &dPdu,
+									   const Vector &dPdv, const Vector &dNsdu,
+									   const Vector &dNsdv, const Point &L,
+									   const Point &V, const Vector &dInternal,
+									   const Point &P0, const Vector tN[3],
+									   const Vector &Ng, Float a11, Float a12,
+									   Float a22, const Spectrum &inputSpectrum,
+									   const Scene *scene,
+									   Float time = 0.0f) const {
+		const Point Pc = P0 + paramP[1] * dPdu + paramP[2] * dPdv;
+		Vector omegaV = V - Pc;
+		Float domegaV = omegaV.length();
+		omegaV /= domegaV;
+		Vector omegaL = L - Pc;
+		Float domegaL = omegaL.length();
+		omegaL /= domegaL;
+		Spectrum result = inputSpectrum;
 
-	// 	if (m_singleScatterShadowRays) {
-	// 		// Shadow test 1: is the outgoing point visible from the light
-	// 		// source?
-	// 		const Ray shadow1 = Ray(Pc, omegaL, ShadowEpsilon,
-	// 								domegaL * (1 - ShadowEpsilon), time);
-	// 		if (scene->rayIntersect(shadow1)) {
-	// 			return Spectrum(0.0f);
-	// 		}
-	// 	}
+		if (m_singleScatterShadowRays) {
+			// Shadow test 1: is the outgoing point visible from the light
+			// source?
+			const Ray shadow1 = Ray(Pc, omegaL, ShadowEpsilon,
+									domegaL * (1 - ShadowEpsilon), time);
+			if (scene->rayIntersect(shadow1)) {
+				return Spectrum(0.0f);
+			}
+		}
 
-	// 	Vector Ns = (tN[0] + paramP[1] * dNsdu + paramP[2] * dNsdv);
-	// 	Float idNs = 1.0f / Ns.length();
-	// 	Ns *= idNs;
-	// 	const Float cosThetaL = dot(omegaL, Ns);
-	// 	const Float cosThetaV = dot(omegaV, Ns);
+		Vector Ns = (tN[0] + paramP[1] * dNsdu + paramP[2] * dNsdv);
+		Float idNs = 1.0f / Ns.length();
+		Ns *= idNs;
+		const Float cosThetaL = dot(omegaL, Ns);
+		const Float cosThetaV = dot(omegaV, Ns);
 
-	// 	/* Fresnel transmittance at the new position */
-	// 	const Float F = fresnelDielectricExt(cosThetaL, m_eta);
+		/* Fresnel transmittance at the new position */
+		const Float F = fresnelDielectricExt(cosThetaL, m_eta);
 
-	// 	/* Evaluate the Henyey-Greenstein model */
-	// 	const Float cosThetaInternal = dot(omegaV, dInternal);
-	// 	Spectrum phase = hg(cosThetaInternal,
-	// 						m_g); // reproduces results with +cosThetaInternal.
-	// 	result *= (1 - F) * phase;
-	// 	result *= m_sigmaS * attenuation(m_sigmaT, -(paramP[0] + domegaV));
-	// 	// computing D with ray differentials as in [Walter 2009]
-	// 	// u_p and u_s are omega'_V
-	// 	const Float mu = cosThetaL + m_eta * cosThetaV;
-	// 	// u_p : perpendicular vector
-	// 	const Vector u_p = normalize(cross(omegaV, Ns));
-	// 	const Vector dPdu_p =
-	// 		domegaV * (u_p - (dot(u_p, Ng) / dot(omegaV, Ng)) * omegaV);
+		/* Evaluate the Henyey-Greenstein model */
+		const Float cosThetaInternal = dot(omegaV, dInternal);
+		Spectrum phase = hg(cosThetaInternal,
+							m_g); // reproduces results with +cosThetaInternal.
+		result *= (1 - F) * phase;
+		result *= m_sigmaS * attenuation(m_sigmaT, -(paramP[0] + domegaV));
 
-	// 	// Normal derivatives are OK
-	// 	const Float dudu_p =
-	// 		(a22 * dot(dPdu_p, dPdu) - a12 * dot(dPdu_p, dPdv));
-	// 	const Float dvdu_p =
-	// 		(-a12 * dot(dPdu_p, dPdu) + a11 * dot(dPdu_p, dPdv));
-	// 	const Float dwdu_p = -dudu_p - dvdu_p;
-	// 	const Vector dNdu_p = dwdu_p * tN[0] + dudu_p * tN[1] + dvdu_p * tN[2];
-	// 	const Vector dNndu_p = dNdu_p * idNs - dot(Ns, dNdu_p * idNs) * Ns;
-	// 	const Float dmudu_p =
-	// 		m_eta * (mu / cosThetaL) * (dot(-u_p, Ns) + dot(omegaV, dNndu_p));
-	// 	const Vector domegaLdu_p = m_eta * u_p + dmudu_p * Ns + mu * dNndu_p;
-	// 	const Vector L_p =
-	// 		dPdu_p - dot(dPdu_p, omegaL) * omegaL + domegaL * domegaLdu_p;
+		// For debug/explanation only: result without the ray-differentials
+		Float D;
+		if (!m_distanceCorrection) {
+			D = (domegaV + m_eta * domegaL) * (std::abs(cosThetaL/cosThetaV)*domegaV +
+											 std::abs(cosThetaV/cosThetaL)*m_eta*domegaL);
+			return result / D;
+		}
 
-	// 	// u_s : parallel vector
-	// 	const Vector u_s = normalize(cross(u_p, omegaV));
-	// 	const Vector dPdu_s =
-	// 		domegaV * (u_s - (dot(u_s, Ng) / dot(omegaV, Ng)) * omegaV);
-	// 	// Normal derivatives
-	// 	const Float dudu_s =
-	// 		(a22 * dot(dPdu_s, dPdu) - a12 * dot(dPdu_s, dPdv));
-	// 	const Float dvdu_s =
-	// 		(-a12 * dot(dPdu_s, dPdu) + a11 * dot(dPdu_s, dPdv));
-	// 	const Float dwdu_s = -dudu_s - dvdu_s;
-	// 	const Vector dNdu_s = dwdu_s * tN[0] + dudu_s * tN[1] + dvdu_s * tN[2];
-	// 	const Vector dNndu_s = dNdu_s * idNs - dot(Ns, dNdu_s * idNs) * Ns;
-	// 	const Float dmudu_s =
-	// 		m_eta * (mu / cosThetaL) * (dot(-u_s, Ns) + dot(omegaV, dNndu_s));
-	// 	const Vector domegaLdu_s = m_eta * u_s + dmudu_s * Ns + mu * dNndu_s;
-	// 	const Vector L_s =
-	// 		dPdu_s - dot(dPdu_s, omegaL) * omegaL + domegaL * domegaLdu_s;
-	// 	Float D = cross(L_p, L_s).length();
+		// computing D with ray differentials as in [Walter 2009]
+		// u_p and u_s are omega'_V
+		const Float mu = cosThetaL + m_eta * cosThetaV;
+		// u_p : perpendicular vector
+		const Vector u_p = normalize(cross(omegaV, Ns));
+		const Vector dPdu_p =
+			domegaV * (u_p - (dot(u_p, Ng) / dot(omegaV, Ng)) * omegaV);
 
-	// 	// For debug/explanation only: result without the ray-differentials
+		// Normal derivatives are OK
+		const Float dudu_p =
+			(a22 * dot(dPdu_p, dPdu) - a12 * dot(dPdu_p, dPdv));
+		const Float dvdu_p =
+			(-a12 * dot(dPdu_p, dPdu) + a11 * dot(dPdu_p, dPdv));
+		const Float dwdu_p = -dudu_p - dvdu_p;
+		const Vector dNdu_p = dwdu_p * tN[0] + dudu_p * tN[1] + dvdu_p * tN[2];
+		const Vector dNndu_p = dNdu_p * idNs - dot(Ns, dNdu_p * idNs) * Ns;
+		const Float dmudu_p =
+			m_eta * (mu / cosThetaL) * (dot(-u_p, Ns) + dot(omegaV, dNndu_p));
+		const Vector domegaLdu_p = m_eta * u_p + dmudu_p * Ns + mu * dNndu_p;
+		const Vector L_p =
+			dPdu_p - dot(dPdu_p, omegaL) * omegaL + domegaL * domegaLdu_p;
 
-	// 	if (!m_distanceCorrection) {
-	// 	  D = (domegaV + m_eta * domegaL) * (std::abs(cosThetaL/cosThetaV)*domegaV +
-	// 										 std::abs(cosThetaV/cosThetaL)*m_eta*domegaL);
-	// 	}
+		// u_s : parallel vector
+		const Vector u_s = normalize(cross(u_p, omegaV));
+		const Vector dPdu_s =
+			domegaV * (u_s - (dot(u_s, Ng) / dot(omegaV, Ng)) * omegaV);
+		// Normal derivatives
+		const Float dudu_s =
+			(a22 * dot(dPdu_s, dPdu) - a12 * dot(dPdu_s, dPdv));
+		const Float dvdu_s =
+			(-a12 * dot(dPdu_s, dPdu) + a11 * dot(dPdu_s, dPdv));
+		const Float dwdu_s = -dudu_s - dvdu_s;
+		const Vector dNdu_s = dwdu_s * tN[0] + dudu_s * tN[1] + dvdu_s * tN[2];
+		const Vector dNndu_s = dNdu_s * idNs - dot(Ns, dNdu_s * idNs) * Ns;
+		const Float dmudu_s =
+			m_eta * (mu / cosThetaL) * (dot(-u_s, Ns) + dot(omegaV, dNndu_s));
+		const Vector domegaLdu_s = m_eta * u_s + dmudu_s * Ns + mu * dNndu_s;
+		const Vector L_s =
+			dPdu_s - dot(dPdu_s, omegaL) * omegaL + domegaL * domegaLdu_s;
+		D = cross(L_p, L_s).length();
 
-	// 	return result / D;
-	// }
+		return result / D;
+	}
 
 	//-------------------------------------------------------------------------
     Spectrum LoSingle(const Scene *scene, Sampler *sampler,
@@ -1138,7 +1300,7 @@ public:
 											if (triangleSpindleTest(triMesh->getTriangles()[primIdx],
 													L, V, positions)) {
 												result += testThisTriangle(triMesh->getTriangles()[primIdx],
-													L, V, dInternal,
+													L, V, dInternal, dist,
 													positions, normals,
 													value * (dRec.dist * dRec.dist),
 													scene, its.time);
