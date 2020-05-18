@@ -227,6 +227,8 @@ int signChanges(const std::vector<Float>& poly) {
 	for (int i = 1; i < size; ++i) {
 		if (sign(poly[i-1] * poly[i]) == -1) ++numChanges;
 	}
+
+	return numChanges;
 }
 
 int polynomialDescartes(const std::vector<Float>& poly) {
@@ -790,7 +792,6 @@ public:
 		// Sidedness agreement, vs. geometric normal.
 		// [TODO] Should also be checked for PV, and for Ns
 		const Vector PL0 = L - tP[0];
-		const Vector PV0 = V - tP[0];
 		if (dot(PL0, Ng) < 0)
 			return Spectrum(0.0f);
 
@@ -943,7 +944,6 @@ public:
 		conicApproximationDescartes(conicApprox, conic, P10, P20, vP0, N10, N20, vN0, vL, vV);
 
 		Spectrum cfTri(0.0f);
-		std::list<ConicChord>::iterator it = conicApprox.begin();
 		for (std::list<ConicChord>::iterator it = conicApprox.begin();
 			 it != conicApprox.end(); ++it) {
 			Float root = 0.0;
@@ -1235,7 +1235,8 @@ public:
 								 std::abs(cosThetaV / cosThetaL) * m_eta * dL);
 				result += ((1 - F) / D) * phase * value * weight;
 			}
-		} else {	// [MF2020] Improved algorithm start
+		} else {
+			// [MF2020] Improved algorithm start
 			// [MF2020] [CHECK] 2: Sample along the ray
 			const Float sMax = 1 - exp(-(thickness / m_radius));
 			const Float dSamples =
@@ -1243,8 +1244,8 @@ public:
 					? sMax / Float(m_singleScatterSamples)
 					: sMax;
 
-			const Spectrum weight0 =
-				(dSamples * m_radius * (dRec.dist * dRec.dist)) * m_sigmaS;
+			// dRec.dist^2 is accounted for in inputSpectrum in testThisTriangle
+			const Spectrum weight0 = (dSamples * m_radius) * m_sigmaS;
 
 			const TriMesh *triMesh = static_cast<const TriMesh *>(its.shape);
 			const Point *positions = triMesh->getVertexPositions();
@@ -1266,6 +1267,10 @@ public:
 				for (size_t i = 0; i < numTriangles; i++) {
 					doneThisTriangleBefore[i] = false;
 				}
+
+				/* Sampling weight, because sampling should have been
+				 * chanel-dependant */
+				Spectrum weight = weight0 * math::fastexp(m_invRadius * dist);
 
 				// scan the kd-tree, cull all nodes not intersecting with segment,
 				// keep going.
@@ -1299,11 +1304,12 @@ public:
 											// if triangle passes spindle test
 											if (triangleSpindleTest(triMesh->getTriangles()[primIdx],
 													L, V, positions)) {
-												result += testThisTriangle(triMesh->getTriangles()[primIdx],
-													L, V, dInternal, dist,
-													positions, normals,
-													value * (dRec.dist * dRec.dist),
-													scene, its.time);
+												result += weight *
+													testThisTriangle(triMesh->getTriangles()[primIdx],
+																	 L, V, dInternal, dist,
+																	 positions, normals,
+																	 value * (dRec.dist * dRec.dist),
+																	 scene, its.time);
 											}
 										}
 									}
@@ -1343,6 +1349,7 @@ public:
 
 			delete[] doneThisTriangleBefore;
 		}
+		return result;
     }
 
     //---------------- End set of functions for single scattering ----------------------
@@ -1400,10 +1407,11 @@ public:
 
 			if (!refractAttenuation.isZero()) {
 				result +=
-					refractAttenuation * 0.0f;
-					// LoSingle(scene, sampler, its, dInternal, depth + 1, 0);
+					refractAttenuation *
+					LoSingle(scene, sampler, its, dInternal, depth + 1, 0);
 			}
 		}
+		// std::cout << result.toString() << std::endl;
 		return result;   
     }
 
@@ -1426,7 +1434,6 @@ public:
 		for (int lambda = 0; lambda < SPECTRUM_SAMPLES; lambda++)
 			m_radius = std::min(m_radius, mfp[lambda]);
 		m_invRadius = 1.0f / m_radius;
-
     }
 
     bool preprocess(const Scene *scene, RenderQueue *queue,
