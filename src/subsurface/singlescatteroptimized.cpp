@@ -97,6 +97,38 @@ bool compIsectPts(IsectPoint iPt1, IsectPoint iPt2) {
 	return iPt1.cPoint.parameter.value < iPt2.cPoint.parameter.value;
 }
 
+bool isAlmostZero(Float x) {
+	return std::abs(x) < RCPOVERFLOW;
+}
+
+int sign(Float val) {
+	return (Float(0) < val) - (val < Float(0));
+}
+
+bool haveDiffSigns(Float a, Float b) {
+	return sign(a) * sign(b) == -1;
+}
+
+int signChanges(const std::vector<Float>& seq) {
+	int size = seq.size();
+	if (size == 0) return 0;
+
+	int firstNonZero = 0;
+	while (isAlmostZero(seq[firstNonZero])) ++firstNonZero;
+
+	int numChanges = 0;
+	int i = firstNonZero + 1;
+	int lastNonZero = firstNonZero;
+	while (i < size) {
+		if (!isAlmostZero(seq[i])) {
+			if (sign(seq[lastNonZero] * seq[i]) == -1) ++numChanges;
+			lastNonZero = i;
+		}
+		++i;
+	}
+
+	return numChanges;
+}
 
 //-------------- [MH2020] Begin set of functions for conic sections -----------
 
@@ -104,7 +136,26 @@ bool compIsectPts(IsectPoint iPt1, IsectPoint iPt2) {
 	The degree of the polynomial can be obtained by substracting 1 to the size
 	of the underlying vector
 	[TODO] Replace with Boost polynomials?
+	[CHECK] The assumption is made that degree == size
+		(does not account for null leading coefficients)
 */
+
+void polynomialPrint(const std::vector<Float>& poly) {
+	for (int i = 0; i < poly.size() - 1; ++i) {
+		std::cout << poly[i] << "\t";
+	}
+	std::cout << poly[poly.size() - 1] << std::endl;
+}
+
+std::vector<Float> polynomialDerivative(const std::vector<Float>& poly) {
+	std::vector<Float> polyDerivative(poly.size() - 1);
+
+	for (int i = 0; i < polyDerivative.size(); ++i) {
+		polyDerivative[i] = (i+1) * poly[i+1];
+	}
+
+	return polyDerivative;
+}
 
 //	Horner evaluation a polynomial, taken from Higham 2002 (p94)
 Float polynomialHorner(const std::vector<Float>& poly, Float t) {
@@ -170,6 +221,154 @@ void polynomialNeg(std::vector<Float>& polyDest) {
 	}
 }
 
+std::vector<Float> polynomialRemainder(const std::vector<Float>& polyDividend,
+									   const std::vector<Float>& polyDivisor) {
+	std::vector<Float> polyRemainder(polyDividend);
+	int sizeR = polyRemainder.size();
+	int sizeD = polyDivisor.size();
+	
+	std::cout << "#################################################" << std::endl;
+	std::cout << "polyDividend: (" << polyDividend.size() << ")\t";
+	polynomialPrint(polyDividend);
+	
+	std::cout << "polyDivisor: (" << polyDivisor.size() << ")\t";
+	polynomialPrint(polyDivisor);	
+
+	Float leadingCoeff = polyDivisor[sizeD - 1];
+	std::cout << "leadingCoeff: " << leadingCoeff << std::endl;
+	while (sizeR >= sizeD) {
+		Float factor = polyRemainder[sizeR - 1] / leadingCoeff;
+		std::cout << "factor: " << factor << std::endl;
+		int degDiff = sizeR - sizeD;
+		std::cout << "degDiff: " << degDiff << std::endl;
+		
+		std::vector<Float> tmpDivisor(sizeR, 0);
+		for (int i = 0; i < sizeD; ++i) {
+		    tmpDivisor[degDiff+i] = polyDivisor[i];
+		}
+
+		std::cout << "tmpDivisor: (" << tmpDivisor.size() << ")\t";
+		polynomialPrint(tmpDivisor);
+
+		polynomialSMult(tmpDivisor, -factor);
+
+		std::cout << "tmpDivisor: (" << tmpDivisor.size() << ")\t";
+		polynomialPrint(tmpDivisor);
+
+		polynomialAdd(polyRemainder, tmpDivisor);
+
+		std::cout << "polyRemainder: (" << polyRemainder.size() << ")\t";
+		polynomialPrint(polyRemainder);
+
+		int leadingZeros = 1;
+		for (int i = sizeR - 2; i >= 0; --i) {
+			if (!isAlmostZero(polyRemainder[i])) break;
+			++leadingZeros;
+		}
+		sizeR -= leadingZeros;
+		std::cout << "leadingZeros: " << leadingZeros << std::endl;
+		std::cout << "sizeR: " << sizeR << std::endl;
+		polyRemainder.resize(sizeR);
+
+		std::cout << "polyResized: (" << polyRemainder.size() << ")\t";
+		polynomialPrint(polyRemainder);
+	}
+	
+	return polyRemainder;
+}
+
+int sturmAlgorithm(const std::vector<Float>& poly, Float a, Float b) {
+	Float polyA, polyDerivA, polyB, polyDerivB;
+	polynomialHornerDeriv(poly, a, polyA, polyDerivA);
+	polynomialHornerDeriv(poly, b, polyB, polyDerivB);
+
+	Float lastNonZeroA = 0;
+	Float lastNonZeroB = 0;
+
+	bool hasLNZA = true;
+	bool hasLNZB = true;
+
+	int numChangesA = 0;
+	int numChangesB = 0;
+
+	/*	Initialisation based on whether evaluating P0 and P1 at a value t
+		provides zero or nonzero results
+	*/
+	if (!isAlmostZero(polyDerivA)) {
+		lastNonZeroA = polyDerivA;
+
+		if (!isAlmostZero(polyA)) {
+			if (haveDiffSigns(polyA, polyDerivA)) ++numChangesA;
+		}
+	} else {
+		if (!isAlmostZero(polyA)) {
+			lastNonZeroA = polyA;
+		} else {
+			hasLNZA = false;
+		}
+	}
+
+	if (!isAlmostZero(polyDerivB)) {
+		lastNonZeroB = polyDerivB;
+
+		if (!isAlmostZero(polyB)) {
+			if (haveDiffSigns(polyB, polyDerivB)) ++numChangesB;
+		}
+	} else {
+		if (!isAlmostZero(polyB)) {
+			lastNonZeroB = polyB;
+		} else {
+			hasLNZB = false;
+		}
+	}
+
+	std::vector<Float> polyPrev(poly);
+	std::vector<Float> polyCurr = polynomialDerivative(poly);
+	
+	// Algorithm
+	while (polyCurr.size() > 1) {
+		// Next polynomial in the sequence
+		std::vector<Float> polyTmp = polynomialRemainder(polyPrev, polyCurr);
+		polyPrev = polyCurr;
+		polyCurr = polyTmp;
+		polynomialNeg(polyCurr);
+		
+		Float evalA = polynomialHorner(polyCurr, a);
+		if (!hasLNZA) {		// No nonzero result yet
+			if (!isAlmostZero(evalA)) {
+				hasLNZA = true;
+				lastNonZeroA = evalA;
+			}
+		} else {
+			// Compare sign of current eval (if nonzero) to last nonzero eval
+			if (!isAlmostZero(evalA)) {
+				if (haveDiffSigns(lastNonZeroA, evalA)) {
+					++numChangesA;
+					lastNonZeroA = evalA;
+				}
+			}
+		}
+
+		Float evalB = polynomialHorner(polyCurr, b);
+		if (!hasLNZB) {		// No nonzero result yet
+			if (!isAlmostZero(evalB)) {
+				hasLNZB = true;
+				lastNonZeroB = evalB;
+			}
+		} else {
+			// Compare sign of current eval (if nonzero) to last nonzero eval
+			if (!isAlmostZero(evalB)) {
+				if (haveDiffSigns(lastNonZeroB, evalB)) {
+					++numChangesB;
+					lastNonZeroB = evalB;
+				}
+			}
+		}
+	}
+
+	return numChangesA - numChangesB;
+}
+
 // std::vector<Float> polynomialDerivative(const std::vector<Float>& polySrc) {
 // 	std::vector<Float> polyDest(polySrc.size() - 1);
 // 	for (int i = 0; i < polyDest.size(); ++i) {
@@ -210,35 +409,20 @@ void polynomialQuarticConstraint(std::vector<Float>& poly, Vector3 X,
 	poly[4] = A.lengthSquared();
 }
 
-int sign(Float val) {
-	return (Float(0) < val) - (val < Float(0));
-}
-
-/*	[TODO] Sign changes should be counted ignoring null coefficients
-	We should only get null coefficients in extremely rare cases, but it can
-	lead to missed roots: e.g. (1, 0, 0, -1) has 1 sign change, but no change
-	would be detected without removing the zeros
-*/
-int signChanges(const std::vector<Float>& poly) {
-	int size = poly.size();
-	if (size == 0) return 0;
-
-	int numChanges = 0;
-	for (int i = 1; i < size; ++i) {
-		if (sign(poly[i-1] * poly[i]) == -1) ++numChanges;
-	}
-
-	return numChanges;
-}
-
 int polynomialDescartes(const std::vector<Float>& poly) {
 	std::vector<Float> polyTransformed(poly);
+
 	int n = poly.size() - 1;
 	for (int i = 1; i <= n; ++i) {
 		for (int k = i; k >= 1; --k) {
 			polyTransformed[k] += polyTransformed[k+1];
 		}
 	}
+
+	// std::cout << "Transformed Polynomial" << std::endl;
+	// for (int i = 0; i < polyTransformed.size(); ++i) {
+	// 	std::cout << "polyT[" << i << "]: " << polyTransformed[i] << std::endl;
+	// }
 
 	return signChanges(polyTransformed);
 }
@@ -247,7 +431,8 @@ int polynomialDescartes(const std::vector<Float>& poly) {
 	[TODO] Improve method robustness
 */
 bool polynomialNewton(const std::vector<Float>& poly, Float& root) {
-	int maxIter = 10;
+	std::cout << "START: polynomialNewton()" << std::endl;
+	int maxIter = 30;
 	Float minPrecision = 1e-5;
 	int iter = 0;
 	bool foundSol = false;
@@ -272,6 +457,7 @@ bool polynomialNewton(const std::vector<Float>& poly, Float& root) {
 		++iter;
 
 		polynomialHornerDeriv(poly, x, valP, valD);
+		std::cout << "iter: " << iter << "\tx = " << x << "\tvalP = " << valP << std::endl;
 		if (std::abs(valP) < minPrecision) {
 			foundSol = true;
 		}
@@ -282,6 +468,7 @@ bool polynomialNewton(const std::vector<Float>& poly, Float& root) {
 		else foundSol = false;
 	}
 	
+	std::cout << "END: polynomialNewton()" << std::endl;
 	return foundSol;
 }
 
@@ -391,6 +578,7 @@ public:
 	}
 
 	bool computeConicParameters(ConicSection &conic) const {
+		std::cout << "START: computeConicParameters()" << std::endl;
 		Matrix3x3 conicMatrix(conic.coefficients[0], 0.5f * conic.coefficients[1], 0.5f * conic.coefficients[3],
 							  0.5f * conic.coefficients[1], conic.coefficients[2], 0.5f * conic.coefficients[4],
 							  0.5f * conic.coefficients[3], 0.5f * conic.coefficients[4], conic.coefficients[5]);
@@ -402,7 +590,7 @@ public:
 		conic.k = detConic / detReduced;
 
 		// Compute the type of the coplanarity conic
-		if(std::abs(detConic)) {
+		if(std::abs(detConic) < RCPOVERFLOW) {
 			conic.conicType = EConicType::EDegenerate;
 		} else {
 			if (std::abs(detReduced) <= RCPOVERFLOW) {
@@ -417,6 +605,11 @@ public:
 		// Fails if the conic is not a central conic, or is degenerate
 		if ((conic.conicType == EConicType::EParabola) ||
 			(conic.conicType == EConicType::EDegenerate)) {
+			if (conic.conicType == EConicType::EDegenerate)
+				Log(EError, "computeConicParameters() failed: 1a");
+			else
+				Log(EError, "computeConicParameters() failed: 1b");
+			
 			return false;
 		}
 
@@ -440,6 +633,7 @@ public:
 		// Should never fail
 		if (!solveQuadratic(1.0f, -(conic.coefficients[0] + conic.coefficients[2]),
 							detReduced, eigval0, eigval1)) {
+			Log(EError, "computeConicParameters() failed: 2");
 			return false;
 		}
 
@@ -484,10 +678,12 @@ public:
 		conic.transformCanonicalToBarycentric = transform;
 		Matrix3x3 transformInv(0.0);
 		if (!transform.invert(transformInv)){
+			Log(EError, "computeConicParameters() failed: 3");
 			return false;
 		}
 		conic.transformBarycentricToCanonical = transformInv;
 
+		std::cout << "END: computeConicParameters()" << std::endl;
 		return true;
 	}
 
@@ -567,6 +763,9 @@ public:
 					     Vector P10, Vector P20, Vector vP0,
 						 Vector N10, Vector N20, Vector vN0,
 						 Vector vL, Vector vV) const {
+		std::cout << "START: chordPolynomial()" << std::endl;
+		// std::cout << "Q0:  " << chord.q0.position.toString() << std::endl
+		// 		  << "Q1:  " << chord.q1.position.toString() << std::endl;
 		Vector3 Delta = chord.q1.position - chord.q0.position;
 
 		Matrix3x3 pBar(P10, P20, vP0);
@@ -595,16 +794,24 @@ public:
 
 		// Full constraint polynomial stored in polyQuadraticLHS
 		polynomialAdd(chord.polynomial, polyQuadraticRHS);
+		
+		// std::cout << "Chord Polynomial" << std::endl;
+		// for (int i = 0; i < chord.polynomial.size(); ++i) {
+		// 	std::cout << "poly[" << i << "]: " << chord.polynomial[i] << std::endl;
+		// }
+		std::cout << "END: chordPolynomial()" << std::endl;
 	}
 
 	// [CHECK]
 	// chords' elements should already have midpoint information (call chordSplit beforehand)
 	void conicApproximationSubdivide(std::list<ConicChord>& chords,
 									 const ConicSection& conic, Float minPrecision) const {
+		std::cout << "START: conicApproximationSubdivide()" << std::endl;
 		std::list<ConicChord>::iterator it = chords.begin();
 		
 		while (it != chords.end()) {
 			if (it->distToConic > minPrecision) {
+				// std::cout << "cAS: split" << std::endl;
 				ConicChord chordLeft = { .q0 = it->q0, .q1 = it->qMid };
 				ConicChord chordRight = { .q0 = it->qMid, .q1 = it->q1 };
 				chordSplit(conic, chordLeft);
@@ -614,46 +821,80 @@ public:
 
 				it = chords.erase(it);	// Returns iterator pointing to next element
 			} else {
+				// std::cout << "cAS: next" << std::endl;
 				++it;
 			}
 		}
+		std::cout << "END: conicApproximationSubdivide()" << std::endl;
 	}
 
 	void conicApproximationDescartes(std::list<ConicChord>& chords, const ConicSection& conic,
 								 Vector P10, Vector P20, Vector vP0,
 						 		 Vector N10, Vector N20, Vector vN0,
 								 Vector vL, Vector vV) const {
+		std::cout << "START: conicApproximationDescartes()" << std::endl;
 		std::list<ConicChord>::iterator it = chords.begin();
 		
 		while (it != chords.end()) {
 			chordPolynomial(*it, m_eta, P10, P20, vP0, N10, N20, vN0, vL, vV);
 			int descartesBound = polynomialDescartes(it->polynomial);
-
+			// std::cout << "descartesBound = " << descartesBound << std::endl;
 			if (descartesBound == 0) {	// No roots, discard the chord
+				// std::cout << "cAD: discard" << std::endl;
 				it = chords.erase(it);
 			} else if (descartesBound == 1) { // Single root, keep the chord
+				// std::cout << "cAD: next" << std::endl;
 				++it;
-			} else {	// More than one root over the chord, split the chord
+			} else {	// More than one root over the chord, split the chord [CHECK]
+				std::cout << "cAD: split" << std::endl;
 				ConicChord chordLeft = { .q0 = it->q0, .q1 = it->qMid };
 				ConicChord chordRight = { .q0 = it->qMid, .q1 = it->q1 };
 				chordSplit(conic, chordLeft);
 				chordSplit(conic, chordRight);
 				chords.push_back(chordLeft);
 				chords.push_back(chordRight);
-
 				it = chords.erase(it);	// Returns iterator pointing to next element
 			}
 		}
+		std::cout << "END: conicApproximationDescartes()" << std::endl;
+	}
+
+	void conicApproximationSturm(std::list<ConicChord>& chords, const ConicSection& conic,
+								 Vector P10, Vector P20, Vector vP0,
+						 		 Vector N10, Vector N20, Vector vN0,
+								 Vector vL, Vector vV) const {
+		std::cout << "START: conicApproximationSturm()" << std::endl;
+		std::list<ConicChord>::iterator it = chords.begin();
+		
+		while (it != chords.end()) {
+			chordPolynomial(*it, m_eta, P10, P20, vP0, N10, N20, vN0, vL, vV);
+			polynomialPrint(it->polynomial);
+			int sturmBound = sturmAlgorithm(it->polynomial, 0, 1);
+			if (sturmBound == 0) {	// No roots, discard the chord
+				std::cout << "cAD: no root" << std::endl;
+				it = chords.erase(it);
+			} else if (sturmBound == 1) { // Single root, keep the chord
+				std::cout << "cAD: single root" << std::endl;
+				++it;
+			} else {	// More than one root over the chord, split the chord [CHECK]
+				std::cout << "cAD: multiple roots" << std::endl;
+				std::cout << "sturmBound = " << sturmBound << std::endl;
+				it = chords.erase(it);	// Returns iterator pointing to next element
+			}
+		}
+		std::cout << "END: conicApproximationSturm()" << std::endl;
 	}
 
 	// [CHECK] Can the projected point not lie in the conic? (Ellipse case)
 	Vector2 chordProjection(const ConicSection& conic, const ConicChord& chord,
 							Float root) const {
+		std::cout << "START: chordProjection()" << std::endl;
 		Float paramValue = (1.0 - root) * chord.q0.parameter.value +
 								   root * chord.q1.parameter.value;
 		ConicParam weightedParam = { .value = paramValue, .branch = chord.q0.parameter.branch };
 		Vector3 projPos = conicParamToPos(conic, weightedParam);
 		
+		std::cout << "END: chordProjection()" << std::endl;
 		return Vector2(projPos[0], projPos[1]);
 	}
 
@@ -778,6 +1019,7 @@ public:
 		/*	[CHECK] Verify that the values used to compute the coefficients of the
 			conic section actually correspond to what I used in my calculations.
 		*/
+		std::cout << "START: testThisTriangle()" << std::endl;
 		const Point tP[3] = { positions[tri.idx[0]], positions[tri.idx[1]],
 							  positions[tri.idx[2]] };
 		const Vector P10 = tP[1] - tP[0];
@@ -807,6 +1049,17 @@ public:
 		const Vector vL(L);
 		const Vector vV(V);
 
+		std::cout << "Triangle Parameters:" << std::endl;
+		std::cout << "P0:  " << tP[0].toString() << std::endl
+				  << "P1:  " << tP[1].toString() << std::endl
+				  << "P2:  " << tP[2].toString() << std::endl
+				  << "N0:  " << tN[0].toString() << std::endl
+				  << "N1:  " << tN[1].toString() << std::endl
+				  << "N2:  " << tN[2].toString() << std::endl
+				  << "L:   " << vL.toString() << std::endl
+				  << "V:   " << vV.toString() << std::endl
+				  << "eta: " << m_eta << std::endl;
+
 		// Conic section coefficients in barycentric space
 		const Float conicA = dot(N10, cross(P10, LV));
 		const Float conicB = dot(N10, cross(P20, LV)) + dot(N20, cross(P10, LV));
@@ -817,6 +1070,14 @@ public:
 							 dot(N20, cross(vL, vV));
 		const Float conicF = dot(vN0, cross(vP0, LV)) + dot(vN0, cross(vL, vV));
 		
+		std::cout << "Conic Parameters:" << std::endl;
+		std::cout << "A: " << conicA << std::endl
+				  << "B: " << conicB << std::endl
+				  << "C: " << conicC << std::endl
+				  << "D: " << conicD << std::endl
+				  << "E: " << conicE << std::endl
+				  << "F: " << conicF << std::endl;
+
 		// 0, 1 --> b = 0 side (A)
 		// 2, 3 --> a = 0 side (B)
 		// 4, 5 --> a + b = 1 side AB)
@@ -848,9 +1109,14 @@ public:
 
 		// LAST TRIANGLE CULLING TEST
 		// If the conic does not intersect the triangle, there cannot be any solutions
-		if (!hasUnitRoots)
+		// [TODO] Handle the case where the whole ellipse is in the triangle
+		if (!hasUnitRoots) {
+			std::cout << "tTT: no conic-triangle intersections" << std::endl;
 			return Spectrum(0.0f);
-		
+		}
+
+		std::cout << "tTT: there are conic-triangle intersections" << std::endl;
+
 		// START FINDING SOLUTIONS
 		ConicSection conic ={ .coefficients = {conicA, conicB, conicC,
 											   conicD, conicE, conicF}};
@@ -896,6 +1162,7 @@ public:
 		std::list<ConicChord> conicApprox;
 
 		// [CHECK] Re-read this section
+		// [CHECK] That it works for 6 intersections in the hyperbola case
 		if (numIsects == 2) {
 			// One chord
 			// E/H: single pair of intersection points
@@ -906,7 +1173,8 @@ public:
 			/*	Two or three chords
 				[4]	E: pairs between adjacent intersection points not on the same triSide
 					H: if single branch, same as for E; if two branches then pairs on same branches
-				[6] E only, same as 4 isects */
+				[6] E: same as 4 isects 
+					H: single branch	*/
 			if ((numIsects == 4) &&
 				(isectPoints[0].cPoint.parameter.branch != isectPoints[3].cPoint.parameter.branch)) {
 				// Two branches: [--++] configuration
@@ -940,9 +1208,13 @@ public:
 			conic falls below a user-specified threshold. Then discard every chord that
 			doesn't contain a root, and subdivide those that contain multiple.	*/
 		Float approxPrecision = 1e-2;
+		std::cout << "tTT: subdivide chords" << std::endl;
+		std::cout << "#starting chords = " << conicApprox.size() << std::endl;
 		conicApproximationSubdivide(conicApprox, conic, approxPrecision);
-		conicApproximationDescartes(conicApprox, conic, P10, P20, vP0, N10, N20, vN0, vL, vV);
+		conicApproximationSturm(conicApprox, conic, P10, P20, vP0, N10, N20, vN0, vL, vV);
+		std::cout << "tTT: end subdivision" << std::endl;
 
+		std::cout << "tTT: conicApprox.size() = " << conicApprox.size() << std::endl;
 		Spectrum cfTri(0.0f);
 		for (std::list<ConicChord>::iterator it = conicApprox.begin();
 			 it != conicApprox.end(); ++it) {
@@ -969,6 +1241,7 @@ public:
 											   scene, time);
 		}
 
+		std::cout << "END: testThisTriangle()" << std::endl;
 		return cfTri;
 	}
 
@@ -982,6 +1255,7 @@ public:
 									   Float a22, const Spectrum &inputSpectrum,
 									   const Scene *scene,
 									   Float time = 0.0f) const {
+		std::cout << "START: contributionFromThatPoint()" << std::endl;
 		const Point Pc = P0 + paramP[1] * dPdu + paramP[2] * dPdv;
 		Vector omegaV = V - Pc;
 		Float domegaV = omegaV.length();
@@ -1066,6 +1340,8 @@ public:
 			dPdu_s - dot(dPdu_s, omegaL) * omegaL + domegaL * domegaLdu_s;
 		D = cross(L_p, L_s).length();
 
+		std::cout << "END: contributionFromThatPoint()" << std::endl;
+		std::cout << "result / D:\t" << (result / D).toString() << std::endl;
 		return result / D;
 	}
 
@@ -1073,6 +1349,7 @@ public:
     Spectrum LoSingle(const Scene *scene, Sampler *sampler,
 					  const Intersection &its, const Vector &dInternal,
 					  int depth, Float z0) const {
+		Log(EDebug, "Call to LoSingle()");
 		Spectrum result(0.0f);
 		if (depth >= m_singleScatterDepth) {
 			return result;
@@ -1355,6 +1632,7 @@ public:
     //---------------- End set of functions for single scattering ----------------------
     Spectrum Lo(const Scene *scene, Sampler *sampler, const Intersection &its,
                 const Vector &d, int depth) const {
+		Log(EDebug, "Call to Lo()");
         //---- Initialize intergator and BSDF stuff from the first intersection seen.
 		if (!m_integrator) {
 			LockGuard lock(mutex);
