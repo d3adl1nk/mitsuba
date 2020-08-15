@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<scene version="0.6.0">
+
+  <integrator type="path">
+	<integer name="maxDepth" value="10"/>
+  </integrator>
+
+
+  <shape type="ply">
+	<string name="filename" value="bumpsphereGeom.ply"/>
+
+	<subsurface type="singlescatter">
+	  <bsdf type="dielectric">
+		<float name="intIOR" value="1.5"/>
+		<float name="extIOR" value="1.0"/>
+	  </bsdf>
+
+	  <boolean name="fastSingleScatter" value="false"/>
+
+	  <spectrum name="sigmaA" value="0.01, 0.1, 0.25"/>
+	  <spectrum name="sigmaS" value="0.21, 0.21, 0.21"/>
+	</subsurface>
+  </shape>
+
+  <sensor type="perspective">
+	<float name="focusDistance" value="1"/>
+	<float name="fov" value="21.24414"/>
+	<string name="fovAxis" value="x"/>
+	<!-- Questions: target, fov -->
+	<transform name="toWorld">
+	  <lookat target="0.825356, -0.49198, -0.277026" origin="-57.4771, 34.8436, 19.3875" up="0.237958 -0.141842 0.960863"/>
+	</transform>
+
+	<sampler type="independent">
+	  <integer name="sampleCount" value="$samples"/>
+	</sampler>
+
+	<film type="hdrfilm">
+	  <boolean name="banner" value="false"/>
+	  <integer name="height" value="512"/>
+	  <string name="pixelFormat" value="rgb"/>
+	  <integer name="width" value="512"/>
+
+	  <rfilter type="gaussian"/>
+	</film>
+  </sensor>
+
+  <emitter type="point">
+	<point name="position" x="156.994" y="-2.58503" z="90.348"/>
+	<spectrum name="intensity" value="2e+06"/>
+  </emitter>
+</scene>

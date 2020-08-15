@@ -1,0 +1,16 @@
+{
+    "configurations": [
+      {
+        "name": "Mitsuba-default_flags",
+        "includePath": ["${workspaceFolder}/**"],
+        "defines": ["MTS_DEBUG","SINGLE_PRECISION","SPECTRUM_SAMPLES=3","MTS_SSE","MTS_HAS_COHERENT_RT"],
+        "compilerPath": "/usr/bin/gcc",
+        "cStandard": "c11",
+        "cppStandard": "c++11",
+        "intelliSenseMode": "clang-x64"
+      }
+    ],
+    "version": 4
+  }
+  
+  
