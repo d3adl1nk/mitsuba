@@ -72,6 +72,7 @@ class MTS_EXPORT_RENDER ShapeKDTree : public SAHKDTree3D<ShapeKDTree> {
     friend class Instance;
     friend class AnimatedInstance;
     friend class SingleScatter;
+    friend class SingleScatterOptimized;
 
 public:
     // =============================================================
